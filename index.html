@@ -359,7 +359,7 @@ const Cam = {
     this.conn = this.peer.connect(target, { reliable: true });
     this.conn.on("open", () => {
       if (gen !== this.gen) return;
-      this.status("Verbunden. Das Handy kann jetzt in die Halterung.", "ok");
+      this.status("Mit Anzeige verbunden, Bild wird aufgebaut …", "ok");
       const caps = this.track.getCapabilities ? this.track.getCapabilities() : {};
       const st = this.track.getSettings();
       this.conn.send({ type: "caps", zoom: caps.zoom || null, zoomNow: st.zoom || null, photo: !!this.ic, w: st.width, h: st.height });
@@ -369,6 +369,18 @@ const Cam = {
     this.conn.on("data", d => this.onCmd(d));
     this.conn.on("close", () => { if (gen !== this.gen) return; this.status("Verbindung getrennt. Neuer Versuch …", "warn"); this.retry(); });
     this.call = this.peer.call(target, this.stream);
+    const watch = () => {
+      if (gen !== this.gen) return;
+      const pc = this.call && this.call.peerConnection;
+      if (!pc) { setTimeout(watch, 300); return; }
+      pc.addEventListener("iceconnectionstatechange", () => {
+        if (gen !== this.gen) return;
+        const st = pc.iceConnectionState;
+        if (st === "connected" || st === "completed") this.status("Bild wird übertragen. Das Handy kann jetzt in die Halterung.", "ok");
+        if (st === "failed") { this.status("Bildverbindung fehlgeschlagen. Beide Geräte im selben WLAN? Neuer Versuch …", "warn"); this.retry(); }
+      });
+    };
+    watch();
     setTimeout(() => this.tuneSender(), 2000);
   },
 
@@ -435,6 +447,9 @@ const View = {
     this.connect();
     this.video = document.createElement("video");
     this.video.muted = true; this.video.playsInline = true; this.video.autoplay = true;
+    this.video.setAttribute("playsinline", ""); this.video.setAttribute("muted", "");
+    Object.assign(this.video.style, { position: "fixed", left: "0", top: "0", width: "4px", height: "4px", opacity: "0.01", pointerEvents: "none" });
+    document.body.appendChild(this.video);
     this.loop();
   },
 
@@ -443,10 +458,23 @@ const View = {
     this.peer = new Peer(PREFIX + this.code);
     this.peer.on("call", call => {
       call.answer();
+      this.ice = "neu";
+      const watch = () => {
+        const pc = call.peerConnection;
+        if (!pc) { setTimeout(watch, 300); return; }
+        const upd = () => {
+          this.ice = pc.iceConnectionState;
+          const t = { checking: ["Verbindung wird aufgebaut …", ""], connected: ["Kamera verbunden", "ok"], completed: ["Kamera verbunden", "ok"],
+                      failed: ["Verbindung fehlgeschlagen. Beide Geräte im selben WLAN (kein Gäste-WLAN)?", "warn"],
+                      disconnected: ["Verbindung unterbrochen …", "warn"] }[this.ice];
+          if (t) this.status(t[0], t[1]);
+        };
+        pc.addEventListener("iceconnectionstatechange", upd); upd();
+      };
+      watch();
       call.on("stream", s => {
         this.video.srcObject = s;
         this.video.play().catch(() => {});
-        this.status("Kamera verbunden", "ok");
       });
       call.on("close", () => this.status("Kamera getrennt", "warn"));
     });
@@ -577,10 +605,18 @@ const View = {
     requestAnimationFrame(tick);
   },
 
+  diag() {
+    const v = this.video;
+    return "<br><span class='status' style='font-size:12px'>Verbindung: " + (this.ice || "keine") +
+      " · Steuerkanal: " + (this.conn && this.conn.open ? "offen" : "zu") +
+      " · Video: " + (v && v.srcObject ? (v.videoWidth + "×" + v.videoHeight + ", Status " + v.readyState) : "kein Signal") + "</span>";
+  },
+
   idleMsg() {
     if (!cv) return;
-    if (!this.orig) this.msg("Kamera starten und <b>Vorlage</b> laden.<br><span class='status'>Auf dem Handy diese Seite öffnen, „Kamera“ wählen und Code " + this.code + " eingeben.</span>");
-    else this.msg("Warte auf die Kamera …<br><span class='status'>Auf dem Handy „Kamera“ wählen und Code " + this.code + " eingeben.</span>");
+    if (this.video && this.video.srcObject && this.video.paused) this.video.play().catch(() => {});
+    if (!this.orig) this.msg("Kamera starten und <b>Vorlage</b> laden.<br><span class='status'>Auf dem Handy diese Seite öffnen, „Kamera“ wählen und Code " + this.code + " eingeben.</span>" + this.diag());
+    else this.msg("Warte auf die Kamera …<br><span class='status'>Auf dem Handy „Kamera“ wählen und Code " + this.code + " eingeben.</span>" + this.diag());
   },
 
   process(source, sw, sh, live) {
