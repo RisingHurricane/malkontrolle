@@ -37,14 +37,14 @@
   /* Kamera */
   #kamera video{width:min(420px,100%);border-radius:10px;background:#000}
   /* Punktwahl */
-  #picker{position:fixed;inset:0;background:#000;display:none;flex-direction:column;z-index:10}
-  #picker.show{display:flex}
-  #pbar{display:flex;gap:6px;padding:6px;background:var(--panel);align-items:center;flex-wrap:wrap}
-  #ptitle{flex:1;font-size:15px;min-width:200px}
-  #pwrap{position:relative;flex:1;min-height:0}
-  #pcan{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
-  #loupe{position:absolute;width:300px;height:300px;border:2px solid var(--acc);border-radius:8px;display:none;touch-action:none;background:#000}
-  #loupeHint{position:absolute;font-size:13px;color:#fff;background:rgba(0,0,0,.7);padding:2px 6px;border-radius:6px;display:none}
+  #aligner{position:fixed;inset:0;background:#000;display:none;flex-direction:column;z-index:10}
+  #aligner.show{display:flex}
+  #abar{display:flex;gap:6px;padding:6px;background:var(--panel);align-items:center;flex-wrap:wrap}
+  #abar .lbl{font-size:13px;color:var(--mut)}
+  #abar input{width:70px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#111}
+  #ahint{font-size:14px;color:var(--fg);padding:4px 8px 6px;background:var(--panel)}
+  #awrap{position:relative;flex:1;min-height:0}
+  #acan{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
 </style>
 </head>
 <body>
@@ -76,7 +76,7 @@
 <section id="anzeige" class="screen">
   <div id="bar">
     <div class="grp"><button id="bVorlage">Vorlage</button><input id="fileVorlage" type="file" accept="image/*" hidden></div>
-    <div class="grp"><button id="bKal">Kalibrieren</button></div>
+    <div class="grp"><button id="bKal">Ausrichten</button></div>
     <div class="grp"><button id="bMode">Konturen</button></div>
     <div class="grp"><button id="bMinus">−</button><span class="lbl" id="lblAdj">Linien</span><button id="bPlus">+</button></div>
     <div class="grp"><button id="bFreeze">Einfrieren</button><button id="bFoto">Foto</button></div>
@@ -94,18 +94,18 @@
 </section>
 
 <!-- Punktwahl -->
-<div id="picker">
-  <div id="pbar">
-    <div id="ptitle"></div>
-    <button id="pUndo">Rückgängig</button>
-    <button id="pDone">Fertig</button>
-    <button id="pCancel">Abbrechen</button>
+<div id="aligner">
+  <div id="abar">
+    <button id="aMode">Konturen</button>
+    <span class="lbl">Druckhöhe</span><input id="aHeight" type="number" inputmode="decimal" step="0.1" placeholder="cm"><span class="lbl">cm</span>
+    <button id="aL">←</button><button id="aR">→</button><button id="aU">↑</button><button id="aD">↓</button>
+    <button id="aRotL">⟲</button><button id="aRotR">⟳</button>
+    <button id="aSm">−</button><button id="aLg">+</button>
+    <span style="flex:1"></span>
+    <button id="aDone">Fertig</button><button id="aCancel">Abbrechen</button>
   </div>
-  <div id="pwrap">
-    <canvas id="pcan"></canvas>
-    <canvas id="loupe" width="300" height="300"></canvas>
-    <div id="loupeHint">In der Lupe genau antippen</div>
-  </div>
+  <div id="ahint">Vorlage mit einem Finger verschieben, mit zwei Fingern drehen und skalieren, bis ihre Linien auf deinen Bleistiftlinien liegen. Die Pfeile verschieben um 0,2 mm.</div>
+  <div id="awrap"><canvas id="acan"></canvas></div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
@@ -113,7 +113,7 @@
 <!-- Bildverarbeitung (rein, ohne Oberfläche) -->
 <script id="core">
 const MARKER_MM = 30;
-const VIEW_MAX = 1200;
+const VIEW_MAX = 1800;
 
 // 3x3-Matrizen als Arrays mit 9 Zahlen (zeilenweise)
 const M3 = {
@@ -212,6 +212,75 @@ function makeCore(cv) {
   }
 
   return { detect, pxPerMm, homography, homographyBetween, warp, edges };
+}
+
+// Entzerrt das Kamerabild metrisch (Millimeter) allein aus den Markern:
+// Alle Marker sind gleich grosse Quadrate. Gesucht ist die Perspektive, bei der
+// sie ueberall gleich gross und gleich geformt erscheinen.
+// Ergebnis: 3x3-Homographie Bildpixel -> mm (Drehung und Lage beliebig).
+function metricRectify(markers) {
+  // Marker mit verdeckter oder falsch erkannter Ecke aussortieren und neu rechnen
+  const R0 = metricRectifyRaw(markers);
+  if (!R0) return null;
+  const good = {};
+  for (const id in markers) {
+    const q = markers[id].map(p => M3.apply(R0, p));
+    const s = [0, 1, 2, 3].map(k => Math.hypot(q[(k+1)%4][0] - q[k][0], q[(k+1)%4][1] - q[k][1]));
+    if (Math.max(...s) / Math.min(...s) < 1.06) good[id] = markers[id];
+  }
+  if (Object.keys(good).length >= 2 && Object.keys(good).length < Object.keys(markers).length)
+    return metricRectifyRaw(good) || R0;
+  return R0;
+}
+
+function metricRectifyRaw(markers) {
+  const ids = Object.keys(markers);
+  if (ids.length < 2) return null;
+  const all = ids.flatMap(k => markers[k]);
+  const cx = all.reduce((s, p) => s + p[0], 0) / all.length;
+  const cy = all.reduce((s, p) => s + p[1], 0) / all.length;
+  const sc = all.reduce((s, p) => s + Math.hypot(p[0] - cx, p[1] - cy), 0) / all.length || 1;
+  const N = [1/sc, 0, -cx/sc, 0, 1/sc, -cy/sc, 0, 0, 1];
+  const pts = ids.map(k => markers[k].map(p => M3.apply(N, p)));
+  const shapes = (g, h) => pts.map(c => {
+    const q = c.map(p => { const w = g*p[0] + h*p[1] + 1; return [p[0]/w, p[1]/w]; });
+    const e1 = [(q[1][0]-q[0][0] + q[2][0]-q[3][0]) / 2, (q[1][1]-q[0][1] + q[2][1]-q[3][1]) / 2];
+    const e2 = [(q[3][0]-q[0][0] + q[2][0]-q[1][0]) / 2, (q[3][1]-q[0][1] + q[2][1]-q[1][1]) / 2];
+    return [e1[0]*e1[0] + e2[0]*e2[0], e1[0]*e1[1] + e2[0]*e2[1], e1[1]*e1[1] + e2[1]*e2[1]];
+  });
+  const mean = S => [0, 1, 2].map(i => S.reduce((s, x) => s + x[i], 0) / S.length);
+  const cost = (g, h) => {
+    const S = shapes(g, h), m = mean(S), tr = m[0] + m[2];
+    return S.reduce((s, x) => s + (x[0]-m[0])**2 + 2*(x[1]-m[1])**2 + (x[2]-m[2])**2, 0) / (tr * tr);
+  };
+  // Nelder-Mead in zwei Dimensionen
+  let sx = [[0, 0], [0.05, 0], [0, 0.05]].map(p => ({ p, f: cost(p[0], p[1]) }));
+  const mk = p => ({ p, f: cost(p[0], p[1]) });
+  for (let it = 0; it < 300; it++) {
+    sx.sort((a, b) => a.f - b.f);
+    const [b, m2, w] = sx;
+    if (it > 30 && Math.abs(w.f - b.f) < 1e-16) break;
+    const c = [(b.p[0] + m2.p[0]) / 2, (b.p[1] + m2.p[1]) / 2];
+    const at = t => [c[0] + t * (w.p[0] - c[0]), c[1] + t * (w.p[1] - c[1])];
+    const r = mk(at(-1));
+    if (r.f < b.f) { const e = mk(at(-2)); sx[2] = e.f < r.f ? e : r; }
+    else if (r.f < m2.f) sx[2] = r;
+    else {
+      const k = mk(at(0.5));
+      if (k.f < w.f) sx[2] = k;
+      else { sx[1] = mk([(b.p[0] + m2.p[0]) / 2, (b.p[1] + m2.p[1]) / 2]); sx[2] = mk([(b.p[0] + w.p[0]) / 2, (b.p[1] + w.p[1]) / 2]); }
+    }
+  }
+  sx.sort((a, b) => a.f - b.f);
+  const [g, h] = sx[0].p;
+  const m = mean(shapes(g, h));
+  const det = m[0]*m[2] - m[1]*m[1];
+  if (!(det > 0)) return null;
+  const sd = Math.sqrt(det), t = Math.sqrt(m[0] + m[2] + 2*sd);
+  const A = [(m[0] + sd) / t / MARKER_MM, m[1] / t / MARKER_MM, (m[2] + sd) / t / MARKER_MM];
+  const dA = A[0]*A[2] - A[1]*A[1];
+  const Ai = [A[2]/dA, 0 - A[1]/dA, 0 - A[1]/dA, A[0]/dA];
+  return M3.mul([Ai[0], Ai[1], 0, Ai[2], Ai[3], 0, 0, 0, 1], M3.mul([1, 0, 0, 0, 1, 0, g, h, 1], N));
 }
 
 // Glaettet die Markerecken im Livebild
@@ -441,7 +510,7 @@ const View = {
     try { await loadCV(); } catch (e) { this.msg("OpenCV konnte nicht geladen werden. Internetverbindung prüfen und Seite neu laden."); return; }
     const blob = await idbGet("vorlage");
     if (blob) await this.setOrig(blob, false);
-    this.cal = LS.get("cal", null);
+    this.cal = LS.get("cal2", null);
     if (this.cal && this.orig) this.setupView();
     this.updateButtons();
     this.connect();
@@ -527,7 +596,7 @@ const View = {
     this.orig = await this.blobToCanvas(blob);
     if (isNew) {
       await idbSet("vorlage", blob);
-      this.cal = null; LS.del("cal"); this.vs = null;
+      this.cal = null; LS.del("cal2"); this.vs = null;
       this.toast("Vorlage geladen. Jetzt kalibrieren.");
     }
   },
@@ -547,7 +616,7 @@ const View = {
     const c = [(x0 + x1) / 2, (y0 + y1) / 2];
     const a = M3.apply(this.cal.H, c), b = M3.apply(this.cal.H, [c[0] + 1, c[1]]);
     const refPxPerOrigPx = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const mmPerView = refPxPerOrigPx / this.cal.pxPerMm / sc;
+    const mmPerView = this.cal.mmPerOrigPx ? this.cal.mmPerOrigPx / sc : refPxPerOrigPx / this.cal.pxPerMm / sc;
     this.vs = { T, vw, vh, crop, mmPerView };
     for (const id of ["#cView", "#cOver", "#cHud"]) { $(id).width = vw; $(id).height = vh; }
     this.drawOverlay(); this.drawHud();
@@ -632,7 +701,7 @@ const View = {
     if (!this.cal || !this.vs) {
       this.drawRaw(g, mk);
       src.delete();
-      this.msg(this.orig ? "Marker " + n + "/4 erkannt.<br>Jetzt <b>Kalibrieren</b>." : "Marker " + n + "/4 erkannt.<br>Jetzt <b>Vorlage</b> laden.", true);
+      this.msg(this.orig ? "Marker " + n + "/4 erkannt.<br>Jetzt <b>Ausrichten</b>." : "Marker " + n + "/4 erkannt.<br>Jetzt <b>Vorlage</b> laden.", true);
       return;
     }
     const { H, n: nc } = core.homographyBetween(this.cal.ref, mk);
@@ -686,42 +755,76 @@ const View = {
     return await this.snapshotCanvas();
   },
 
-  async calibrate() {
+  edgeCanvas(img, thr) {
+    const src = cv.imread(img);
+    const mask = core.edges(src, thr);
+    src.delete();
+    const w = img.width, h = img.height;
+    const r = Math.max(1, Math.round(Math.max(w, h) / 1500));
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    const ctx = c.getContext("2d"), id = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      for (let dy = -r + 1; dy < r; dy++) for (let dx = -r + 1; dx < r; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const j = (yy * w + xx) * 4; id.data[j] = 255; id.data[j + 1] = 0; id.data[j + 2] = 255; id.data[j + 3] = 255;
+      }
+    }
+    ctx.putImageData(id, 0, 0);
+    return c;
+  },
+
+  async align() {
     if (!this.orig) { this.toast("Zuerst die Vorlage laden.", 3000); return; }
     let ref;
     try { ref = await this.getReference(); } catch (e) { this.toast(e.message, 4000); return; }
-    const src = cv.imread(ref); const mk = core.detect(src); src.delete();
+    const src = cv.imread(ref); const mk = core.detect(src);
     const n = Object.keys(mk).length;
-    if (n < 3) { this.toast("Nur " + n + " Marker im Foto erkannt. Mindestens 3 nötig.", 5000); return; }
-    const pRef = await Picker.pick(ref, { title: "Foto: unbemalte Passpunkte antippen (mind. 4, gut verteilt)", min: 4 });
-    if (!pRef) return;
-    const pOrg = await Picker.pick(this.orig, { title: "Vorlage: dieselben " + pRef.length + " Punkte in derselben Reihenfolge", count: pRef.length, min: pRef.length, ghosts: null });
-    if (!pOrg) return;
-    const H = core.homography(pOrg, pRef, false);
-    if (!H) { this.toast("Kalibrierung fehlgeschlagen. Punkte prüfen.", 4000); return; }
-    const ppm = core.pxPerMm(mk);
-    const err = pOrg.map((p, i) => { const q = M3.apply(H, p); return Math.hypot(q[0] - pRef[i][0], q[1] - pRef[i][1]) / ppm; });
-    const roiPts = await Picker.pick(this.orig, { title: "Vorlage: Ausschnitt festlegen – oben links, dann unten rechts antippen. „Fertig“ = ganzes Bild", count: 2, min: 0 });
-    let roi = [0, 0, this.orig.width, this.orig.height];
-    if (roiPts && roiPts.length === 2) {
-      const xs = roiPts.map(p => p[0]), ys = roiPts.map(p => p[1]);
-      roi = [Math.max(0, Math.round(Math.min(...xs))), Math.max(0, Math.round(Math.min(...ys))),
-             Math.min(this.orig.width, Math.round(Math.max(...xs))), Math.min(this.orig.height, Math.round(Math.max(...ys)))];
-      if (roi[2] - roi[0] < 20 || roi[3] - roi[1] < 20) roi = [0, 0, this.orig.width, this.orig.height];
+    if (n < 3) { src.delete(); this.toast("Nur " + n + " Marker erkannt. Mindestens 3 müssen im Bild sein.", 5000); return; }
+    const R = metricRectify(mk);
+    if (!R) { src.delete(); this.toast("Entzerrung fehlgeschlagen. Marker prüfen.", 4000); return; }
+    // Foto in Millimeter-Ansicht umrechnen
+    const cs = [[0, 0], [ref.width, 0], [ref.width, ref.height], [0, ref.height]].map(p => M3.apply(R, p));
+    const minx = Math.min(...cs.map(p => p[0])), maxx = Math.max(...cs.map(p => p[0]));
+    const miny = Math.min(...cs.map(p => p[1])), maxy = Math.max(...cs.map(p => p[1]));
+    const k = 2200 / Math.max(maxx - minx, maxy - miny); // Pixel pro mm der Ansicht
+    const pw = Math.round((maxx - minx) * k), ph = Math.round((maxy - miny) * k);
+    const K = [k, 0, -minx * k, 0, k, -miny * k, 0, 0, 1];
+    const rect = core.warp(src, M3.mul(K, R), pw, ph);
+    src.delete();
+    const photo = document.createElement("canvas"); photo.width = pw; photo.height = ph;
+    cv.imshow(photo, rect); rect.delete();
+    const edges = this.edgeCanvas(this.orig, this.thr);
+    // Startlage: gespeicherte Ausrichtung oder Vorlage mittig
+    const key = "align_" + this.orig.width + "x" + this.orig.height;
+    let S = LS.get(key, null);
+    if (!S) {
+      const hcm = LS.get("printHeightCm", null);
+      const a = hcm ? hcm * 10 / this.orig.height : 1.3 * (maxy - miny) / this.orig.height;
+      S = { a, b: 0, tx: (minx + maxx) / 2 - a * this.orig.width / 2, ty: (miny + maxy) / 2 - a * this.orig.height / 2 };
     }
-    this.cal = { ref: mk, H, pxPerMm: ppm, roi, err };
-    LS.set("cal", this.cal);
+    const res = await Aligner.run({ photo, k, minx, miny, maxx, maxy, orig: this.orig, edges, S });
+    if (!res) return;
+    LS.set(key, res);
+    const S3 = [res.a, -res.b, res.tx, res.b, res.a, res.ty, 0, 0, 1];
+    const H = M3.mul(M3.inv(R), S3); // Vorlage -> Referenzfoto
+    // Ausschnitt = Bereich, den die Kamera sieht
+    const Sinv = M3.inv(S3);
+    const oc = cs.map(p => M3.apply(Sinv, p));
+    const roi = [Math.max(0, Math.floor(Math.min(...oc.map(p => p[0])))), Math.max(0, Math.floor(Math.min(...oc.map(p => p[1])))),
+                 Math.min(this.orig.width, Math.ceil(Math.max(...oc.map(p => p[0])))), Math.min(this.orig.height, Math.ceil(Math.max(...oc.map(p => p[1]))))];
+    if (roi[2] - roi[0] < 20 || roi[3] - roi[1] < 20) { this.toast("Die Vorlage liegt nicht im Kamerabild. Bitte neu ausrichten.", 5000); return; }
+    this.cal = { ref: mk, H, pxPerMm: core.pxPerMm(mk), roi, mmPerOrigPx: Math.hypot(res.a, res.b) };
+    LS.set("cal2", this.cal);
     this.smooth.reset();
     this.setupView();
-    const worst = Math.max(...err);
-    this.toast("Kalibriert. Restfehler je Punkt (mm): " + err.map(e => e.toFixed(2)).join(" · ") +
-      (worst > 1 && err.length > 4 ? "<br>Ein Punkt liegt über 1 mm daneben. Neu kalibrieren lohnt sich." : ""), 9000);
-    // Referenzbild einmal entzerrt zeigen
+    this.toast("Ausgerichtet.", 2500);
     this.process(ref, ref.width, ref.height, false);
   },
 
   async photoCheck() {
-    if (!this.cal) { this.toast("Zuerst kalibrieren.", 3000); return; }
+    if (!this.cal) { this.toast("Zuerst ausrichten.", 3000); return; }
     try {
       this.toast("Foto wird geholt …", 30000);
       const blob = await this.requestPhoto();
@@ -772,82 +875,95 @@ const View = {
   status(t, cls) { const el = $("#viewStatus"); el.textContent = t; el.className = "status " + (cls || ""); }
 };
 
-/* ===================================================== Punktwahl mit Lupe */
-const Picker = {
-  pick(img, { title, count = null, min = 1 }) {
+/* ===================================================== Ausrichten mit Fingern */
+const Aligner = {
+  run({ photo, k, minx, miny, maxx, maxy, orig, edges, S }) {
     return new Promise(resolve => {
-      const P = $("#picker"), can = $("#pcan"), lp = $("#loupe"), hint = $("#loupeHint");
-      const pts = [];
-      let fit = null, pending = null;
-      const LZ = 5, HALF = 30; // Lupe: 5-fach, 60x60 Bildpixel
-      P.classList.add("show");
-      const update = () => {
-        const n = pts.length;
-        $("#ptitle").textContent = title + "  ·  " + n + (count ? "/" + count : "") + " Punkte";
-        $("#pDone").disabled = n < min;
-      };
+      const A = $("#aligner"), can = $("#acan");
+      S = Object.assign({}, S);
+      let mode = 0, fit = null, raf = 0;
+      const ptrs = new Map();
+      A.classList.add("show");
+      const hIn = $("#aHeight");
+      hIn.value = (S.a * orig.height / 10).toFixed(1);
       const draw = () => {
+        raf = 0;
         const r = can.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-        can.width = Math.round(r.width * dpr); can.height = Math.round(r.height * dpr);
-        const s = Math.min(can.width / img.width, can.height / img.height);
-        const ox = (can.width - img.width * s) / 2, oy = (can.height - img.height * s) / 2;
-        fit = { s, ox, oy, dpr };
+        const cw = Math.round(r.width * dpr), ch = Math.round(r.height * dpr);
+        if (can.width !== cw || can.height !== ch) { can.width = cw; can.height = ch; }
+        const f = Math.min(cw / photo.width, ch / photo.height);
+        fit = { F: f * k, ox: (cw - photo.width * f) / 2, oy: (ch - photo.height * f) / 2, dpr, r };
         const ctx = can.getContext("2d");
-        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, can.width, can.height);
-        ctx.drawImage(img, ox, oy, img.width * s, img.height * s);
-        ctx.font = (16 * dpr) + "px system-ui";
-        pts.forEach((p, i) => {
-          const x = ox + p[0] * s, y = oy + p[1] * s;
-          ctx.fillStyle = "#ff1744"; ctx.beginPath(); ctx.arc(x, y, 5 * dpr, 0, 7); ctx.fill();
-          ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 3 * dpr;
-          ctx.strokeText(String(i + 1), x + 8 * dpr, y - 8 * dpr); ctx.fillText(String(i + 1), x + 8 * dpr, y - 8 * dpr);
-        });
-        update();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1; ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(photo, fit.ox, fit.oy, photo.width * f, photo.height * f);
+        const F = fit.F;
+        ctx.setTransform(F * S.a, F * S.b, -F * S.b, F * S.a, F * (S.tx - minx) + fit.ox, F * (S.ty - miny) + fit.oy);
+        ctx.globalAlpha = mode === 0 ? 1 : 0.5;
+        ctx.drawImage(mode === 0 ? edges : orig, 0, 0);
+        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+        if (document.activeElement !== hIn) hIn.value = (Math.hypot(S.a, S.b) * orig.height / 10).toFixed(1);
       };
-      const openLoupe = (ix, iy, cssX, cssY) => {
-        const x0 = Math.round(Math.min(Math.max(ix - HALF, 0), Math.max(0, img.width - 2 * HALF)));
-        const y0 = Math.round(Math.min(Math.max(iy - HALF, 0), Math.max(0, img.height - 2 * HALF)));
-        pending = { x0, y0 };
-        const ctx = lp.getContext("2d");
-        ctx.imageSmoothingEnabled = false;
-        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 300, 300);
-        ctx.drawImage(img, x0, y0, 2 * HALF, 2 * HALF, 0, 0, 300, 300);
-        ctx.strokeStyle = "rgba(0,255,0,.8)"; ctx.lineWidth = 1;
-        const cx = (ix - x0) * LZ, cy = (iy - y0) * LZ;
-        ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, 300); ctx.moveTo(0, cy); ctx.lineTo(300, cy); ctx.stroke();
-        const wrap = $("#pwrap").getBoundingClientRect();
-        const left = cssX < wrap.width / 2 ? wrap.width - 316 : 16;
-        const top = cssY < wrap.height / 2 ? wrap.height - 316 : 16;
-        lp.style.left = Math.max(0, left) + "px"; lp.style.top = Math.max(0, top) + "px"; lp.style.display = "block";
-        hint.style.left = lp.style.left; hint.style.top = (Math.max(0, top) - 24 < 0 ? Math.max(0, top) + 304 : Math.max(0, top) - 24) + "px"; hint.style.display = "block";
+      const redraw = () => { if (!raf) raf = requestAnimationFrame(draw); };
+      const toMm = e => {
+        const x = (e.clientX - fit.r.left) * fit.dpr, y = (e.clientY - fit.r.top) * fit.dpr;
+        return [(x - fit.ox) / fit.F + minx, (y - fit.oy) / fit.F + miny];
       };
-      const closeLoupe = () => { lp.style.display = "none"; hint.style.display = "none"; pending = null; };
-      const finish = (res) => {
-        P.classList.remove("show"); closeLoupe();
-        can.onpointerdown = lp.onpointerdown = null;
-        $("#pUndo").onclick = $("#pDone").onclick = $("#pCancel").onclick = null;
-        window.removeEventListener("resize", draw);
+      // Aehnlichkeitstransformation G(y) = z*y + t (komplex) auf S anwenden
+      const applyG = (zr, zi, tr, ti) => {
+        const a = zr * S.a - zi * S.b, b = zr * S.b + zi * S.a;
+        const tx = zr * S.tx - zi * S.ty + tr, ty = zr * S.ty + zi * S.tx + ti;
+        S.a = a; S.b = b; S.tx = tx; S.ty = ty;
+      };
+      const center = () => [(minx + maxx) / 2, (miny + maxy) / 2];
+      const aroundCenter = (zr, zi) => { const c = center(); applyG(zr, zi, c[0] - (zr * c[0] - zi * c[1]), c[1] - (zr * c[1] + zi * c[0])); redraw(); };
+      can.onpointerdown = e => { can.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, toMm(e)); };
+      can.onpointermove = e => {
+        if (!ptrs.has(e.pointerId)) return;
+        const prev = new Map(ptrs);
+        ptrs.set(e.pointerId, toMm(e));
+        if (ptrs.size === 1) {
+          const p = prev.get(e.pointerId), q = ptrs.get(e.pointerId);
+          S.tx += q[0] - p[0]; S.ty += q[1] - p[1];
+        } else {
+          const ids = [...ptrs.keys()].slice(0, 2);
+          const p1 = prev.get(ids[0]), p2 = prev.get(ids[1]), q1 = ptrs.get(ids[0]), q2 = ptrs.get(ids[1]);
+          const dp = [p2[0] - p1[0], p2[1] - p1[1]], dq = [q2[0] - q1[0], q2[1] - q1[1]];
+          const den = dp[0] * dp[0] + dp[1] * dp[1];
+          if (den < 1e-6) return;
+          const zr = (dq[0] * dp[0] + dq[1] * dp[1]) / den, zi = (dq[1] * dp[0] - dq[0] * dp[1]) / den;
+          applyG(zr, zi, q1[0] - (zr * p1[0] - zi * p1[1]), q1[1] - (zr * p1[1] + zi * p1[0]));
+        }
+        redraw();
+      };
+      const up = e => ptrs.delete(e.pointerId);
+      can.onpointerup = can.onpointercancel = up;
+      const step = 0.2, rot = 0.1 * Math.PI / 180, sc = 0.001;
+      $("#aL").onclick = () => { S.tx -= step; redraw(); };
+      $("#aR").onclick = () => { S.tx += step; redraw(); };
+      $("#aU").onclick = () => { S.ty -= step; redraw(); };
+      $("#aD").onclick = () => { S.ty += step; redraw(); };
+      $("#aRotL").onclick = () => aroundCenter(Math.cos(-rot), Math.sin(-rot));
+      $("#aRotR").onclick = () => aroundCenter(Math.cos(rot), Math.sin(rot));
+      $("#aSm").onclick = () => aroundCenter(1 - sc, 0);
+      $("#aLg").onclick = () => aroundCenter(1 + sc, 0);
+      $("#aMode").onclick = () => { mode = 1 - mode; $("#aMode").textContent = mode === 0 ? "Konturen" : "Bild"; redraw(); };
+      hIn.onchange = () => {
+        const cm = parseFloat(String(hIn.value).replace(",", "."));
+        if (!(cm > 1)) return;
+        LS.set("printHeightCm", cm);
+        const cur = Math.hypot(S.a, S.b), want = cm * 10 / orig.height;
+        aroundCenter(want / cur, 0);
+      };
+      const finish = res => {
+        A.classList.remove("show");
+        can.onpointerdown = can.onpointermove = can.onpointerup = can.onpointercancel = null;
+        window.removeEventListener("resize", redraw);
         resolve(res);
       };
-      can.onpointerdown = e => {
-        const r = can.getBoundingClientRect();
-        const px = (e.clientX - r.left) * fit.dpr, py = (e.clientY - r.top) * fit.dpr;
-        const ix = (px - fit.ox) / fit.s, iy = (py - fit.oy) / fit.s;
-        if (ix < 0 || iy < 0 || ix > img.width || iy > img.height) return;
-        openLoupe(ix, iy, e.clientX - r.left, e.clientY - r.top);
-      };
-      lp.onpointerdown = e => {
-        if (!pending) return;
-        const r = lp.getBoundingClientRect();
-        const x = (e.clientX - r.left) * (300 / r.width), y = (e.clientY - r.top) * (300 / r.height);
-        pts.push([pending.x0 + x / LZ, pending.y0 + y / LZ]);
-        closeLoupe(); draw();
-        if (count && pts.length >= count) setTimeout(() => finish(pts), 250);
-      };
-      $("#pUndo").onclick = () => { pts.pop(); closeLoupe(); draw(); };
-      $("#pDone").onclick = () => { if (pts.length >= min) finish(pts); };
-      $("#pCancel").onclick = () => finish(null);
-      window.addEventListener("resize", draw);
+      $("#aDone").onclick = () => finish(S);
+      $("#aCancel").onclick = () => finish(null);
+      window.addEventListener("resize", redraw);
       requestAnimationFrame(draw);
     });
   }
@@ -864,7 +980,7 @@ $("#fileVorlage").onchange = async e => {
   try { await View.setOrig(f, true); View.updateButtons(); } catch (err) { View.toast("Bild konnte nicht gelesen werden.", 4000); }
   e.target.value = "";
 };
-$("#bKal").onclick = () => View.calibrate();
+$("#bKal").onclick = () => View.align();
 $("#bMode").onclick = () => { View.mode = (View.mode + 1) % 3; LS.set("mode", View.mode); View.drawOverlay(); };
 $("#bMinus").onclick = () => View.adjust(-1);
 $("#bPlus").onclick = () => View.adjust(1);
