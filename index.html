@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#121212">
+<title>Malkontrolle</title>
+<style>
+  :root{--bg:#121212;--panel:#1d1d1d;--fg:#ececec;--mut:#9a9a9a;--acc:#e040fb;--btn:#2a2a2a;--line:#3a3a3a;--warn:#ff7a59;--ok:#6fd38a}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+  button,input,select{font:inherit;color:inherit}
+  button{background:var(--btn);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-height:44px;cursor:pointer}
+  button:active{background:#333}
+  button.on{border-color:var(--acc);color:#fff}
+  button:disabled{opacity:.4}
+  .screen{display:none;height:100%}
+  .screen.show{display:flex}
+  .center{flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center}
+  h1{font-size:26px;margin:0 0 4px}
+  p{margin:0;color:var(--mut);max-width:520px}
+  .big{font-size:18px;padding:16px 22px;width:min(420px,100%)}
+  .code{font-size:42px;letter-spacing:6px;font-variant-numeric:tabular-nums;color:#fff}
+  input.codein{font-size:32px;letter-spacing:6px;text-align:center;width:220px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--panel)}
+  .status{font-size:14px;color:var(--mut)}
+  .status.ok{color:var(--ok)} .status.warn{color:var(--warn)}
+  /* Anzeige */
+  #anzeige{flex-direction:column}
+  #bar{display:flex;flex-wrap:wrap;gap:6px;padding:6px;background:var(--panel);border-bottom:1px solid var(--line);align-items:center}
+  #bar .grp{display:flex;gap:4px;align-items:center}
+  #bar .lbl{font-size:13px;color:var(--mut);padding:0 4px}
+  #bar .sp{flex:1}
+  #stage{position:relative;flex:1;min-height:0;background:#000}
+  #stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  #msg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;padding:18px 22px;background:rgba(20,20,20,.85);border-radius:12px;max-width:min(520px,90%);display:none}
+  #toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);padding:10px 16px;background:rgba(20,20,20,.9);border:1px solid var(--line);border-radius:10px;font-size:14px;display:none;max-width:92%;text-align:center}
+  /* Kamera */
+  #kamera video{width:min(420px,100%);border-radius:10px;background:#000}
+  /* Punktwahl */
+  #picker{position:fixed;inset:0;background:#000;display:none;flex-direction:column;z-index:10}
+  #picker.show{display:flex}
+  #pbar{display:flex;gap:6px;padding:6px;background:var(--panel);align-items:center;flex-wrap:wrap}
+  #ptitle{flex:1;font-size:15px;min-width:200px}
+  #pwrap{position:relative;flex:1;min-height:0}
+  #pcan{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+  #loupe{position:absolute;width:300px;height:300px;border:2px solid var(--acc);border-radius:8px;display:none;touch-action:none;background:#000}
+  #loupeHint{position:absolute;font-size:13px;color:#fff;background:rgba(0,0,0,.7);padding:2px 6px;border-radius:6px;display:none}
+</style>
+</head>
+<body>
+
+<!-- Start -->
+<section id="start" class="screen center">
+  <h1>Malkontrolle</h1>
+  <p>Das Handy filmt das Brett, das Tablet zeigt das entzerrte Bild mit den Konturen deiner Vorlage. Beide Geräte müssen im selben WLAN sein.</p>
+  <button class="big" id="btnRoleCam">Dieses Gerät ist die Kamera (Handy)</button>
+  <button class="big" id="btnRoleView">Dieses Gerät ist die Anzeige (Tablet)</button>
+</section>
+
+<!-- Kamera (Handy) -->
+<section id="kamera" class="screen center">
+  <h1>Kamera</h1>
+  <p>Code von der Anzeige eingeben:</p>
+  <input id="camCode" class="codein" inputmode="numeric" maxlength="6" autocomplete="off">
+  <button class="big" id="btnCamStart">Kamera starten</button>
+  <div id="camStatus" class="status"></div>
+  <video id="camPreview" playsinline muted autoplay></video>
+  <div id="camZoomRow" style="display:none;width:min(420px,100%)">
+    <div class="status">Zoom <span id="camZoomVal"></span></div>
+    <input id="camZoom" type="range" style="width:100%">
+  </div>
+  <button id="btnCamBack">Zurück zur Auswahl</button>
+</section>
+
+<!-- Anzeige (Tablet) -->
+<section id="anzeige" class="screen">
+  <div id="bar">
+    <div class="grp"><button id="bVorlage">Vorlage</button><input id="fileVorlage" type="file" accept="image/*" hidden></div>
+    <div class="grp"><button id="bKal">Kalibrieren</button></div>
+    <div class="grp"><button id="bMode">Konturen</button></div>
+    <div class="grp"><button id="bMinus">−</button><span class="lbl" id="lblAdj">Linien</span><button id="bPlus">+</button></div>
+    <div class="grp"><button id="bFreeze">Einfrieren</button><button id="bFoto">Foto</button></div>
+    <div class="grp" id="zoomGrp" style="display:none"><button id="bZm">Zoom −</button><span class="lbl" id="lblZoom"></span><button id="bZp">Zoom +</button></div>
+    <div class="sp"></div>
+    <div class="grp"><span class="lbl">Code</span><b id="viewCode"></b><span id="viewStatus" class="status" style="padding-left:8px"></span></div>
+  </div>
+  <div id="stage">
+    <canvas id="cView"></canvas>
+    <canvas id="cOver"></canvas>
+    <canvas id="cHud"></canvas>
+    <div id="msg"></div>
+    <div id="toast"></div>
+  </div>
+</section>
+
+<!-- Punktwahl -->
+<div id="picker">
+  <div id="pbar">
+    <div id="ptitle"></div>
+    <button id="pUndo">Rückgängig</button>
+    <button id="pDone">Fertig</button>
+    <button id="pCancel">Abbrechen</button>
+  </div>
+  <div id="pwrap">
+    <canvas id="pcan"></canvas>
+    <canvas id="loupe" width="300" height="300"></canvas>
+    <div id="loupeHint">In der Lupe genau antippen</div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
+
+<!-- Bildverarbeitung (rein, ohne Oberfläche) -->
+<script id="core">
+const MARKER_MM = 30;
+const VIEW_MAX = 1200;
+
+// 3x3-Matrizen als Arrays mit 9 Zahlen (zeilenweise)
+const M3 = {
+  mul(a, b) {
+    const r = new Array(9);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++)
+      r[i*3+j] = a[i*3]*b[j] + a[i*3+1]*b[3+j] + a[i*3+2]*b[6+j];
+    return r;
+  },
+  inv(m) {
+    const [a,b,c,d,e,f,g,h,i] = m;
+    const A = e*i-f*h, B = -(d*i-f*g), C = d*h-e*g;
+    const det = a*A + b*B + c*C;
+    if (Math.abs(det) < 1e-12) return null;
+    return [A/det, -(b*i-c*h)/det, (b*f-c*e)/det,
+            B/det, (a*i-c*g)/det, -(a*f-c*d)/det,
+            C/det, -(a*h-b*g)/det, (a*e-b*d)/det];
+  },
+  apply(m, p) {
+    const w = m[6]*p[0] + m[7]*p[1] + m[8];
+    return [(m[0]*p[0] + m[1]*p[1] + m[2]) / w, (m[3]*p[0] + m[4]*p[1] + m[5]) / w];
+  }
+};
+
+function makeCore(cv) {
+  const dict = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+  const params = new cv.aruco_DetectorParameters();
+  params.cornerRefinementMethod = cv.CORNER_REFINE_SUBPIX;
+  const detector = new cv.aruco_ArucoDetector(dict, params, new cv.aruco_RefineParameters(10, 3, true));
+
+  // RGBA-Mat -> {id: [[x,y]x4]} fuer IDs 0..3
+  function detect(rgba) {
+    const gray = new cv.Mat();
+    cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
+    const corners = new cv.MatVector(), ids = new cv.Mat(), rej = new cv.MatVector();
+    detector.detectMarkers(gray, corners, ids, rej);
+    const out = {};
+    for (let k = 0; k < corners.size(); k++) {
+      const id = ids.data32S[k];
+      if (id >= 0 && id <= 3) {
+        const c = corners.get(k), d = c.data32F;
+        out[id] = [[d[0],d[1]],[d[2],d[3]],[d[4],d[5]],[d[6],d[7]]];
+        c.delete();
+      }
+    }
+    gray.delete(); corners.delete(); ids.delete(); rej.delete();
+    return out;
+  }
+
+  function pxPerMm(markers) {
+    let s = 0, n = 0;
+    for (const id in markers) {
+      const c = markers[id];
+      for (let k = 0; k < 4; k++) { const a = c[k], b = c[(k+1)%4]; s += Math.hypot(a[0]-b[0], a[1]-b[1]); n++; }
+    }
+    return n ? s / n / MARKER_MM : 0;
+  }
+
+  // Punkte [[x,y],...] -> 3x3-Homographie (9 Zahlen) oder null
+  function homography(src, dst, ransac) {
+    if (src.length < 4) return null;
+    const s = cv.matFromArray(src.length, 1, cv.CV_32FC2, src.flat());
+    const d = cv.matFromArray(dst.length, 1, cv.CV_32FC2, dst.flat());
+    const H = cv.findHomography(s, d, ransac ? cv.RANSAC : 0, 3);
+    let r = null;
+    if (!H.empty()) r = Array.from(H.data64F);
+    s.delete(); d.delete(); H.delete();
+    return r;
+  }
+
+  function homographyBetween(ref, cur) {
+    const common = Object.keys(ref).filter(k => cur[k]);
+    if (common.length < 2) return { H: null, n: common.length };
+    const src = [], dst = [];
+    for (const k of common) { src.push(...ref[k]); dst.push(...cur[k]); }
+    return { H: homography(src, dst, true), n: common.length };
+  }
+
+  function warp(src, M, w, h) {
+    const m = cv.matFromArray(3, 3, cv.CV_64F, M);
+    const dst = new cv.Mat();
+    cv.warpPerspective(src, dst, m, new cv.Size(w, h), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0,0,0,255));
+    m.delete();
+    return dst;
+  }
+
+  // RGBA-Mat -> Uint8Array-Maske der Kanten
+  function edges(rgba, thr) {
+    const g = new cv.Mat(), f = new cv.Mat(), e = new cv.Mat();
+    cv.cvtColor(rgba, g, cv.COLOR_RGBA2GRAY);
+    cv.bilateralFilter(g, f, 7, 40, 7);
+    cv.Canny(f, e, thr, thr * 2.5);
+    const mask = new Uint8Array(e.data);
+    g.delete(); f.delete(); e.delete();
+    return mask;
+  }
+
+  return { detect, pxPerMm, homography, homographyBetween, warp, edges };
+}
+
+// Glaettet die Markerecken im Livebild
+function makeSmoother(a = 0.5, jump = 6) {
+  let state = {};
+  const f = (markers) => {
+    const out = {};
+    for (const id in markers) {
+      let c = markers[id];
+      const p = state[id];
+      if (p && Math.max(...c.flatMap((q, k) => [Math.abs(q[0]-p[k][0]), Math.abs(q[1]-p[k][1])])) < jump)
+        c = c.map((q, k) => [a*q[0] + (1-a)*p[k][0], a*q[1] + (1-a)*p[k][1]]);
+      state[id] = c; out[id] = c;
+    }
+    return out;
+  };
+  f.reset = () => { state = {}; };
+  return f;
+}
+</script>
+
+<script>
+const CV_URL = "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js";
+const PREFIX = "malkontrolle-v1-";
+const $ = s => document.querySelector(s);
+
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  del(k) { try { localStorage.removeItem(k); } catch (e) {} }
+};
+
+// IndexedDB fuer die Vorlage (zu gross fuer localStorage)
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("malkontrolle", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbSet(k, v) {
+  try { const db = await idbOpen(); await new Promise((res, rej) => { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); } catch (e) {}
+}
+async function idbGet(k) {
+  try { const db = await idbOpen(); return await new Promise((res, rej) => { const q = db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); } catch (e) { return undefined; }
+}
+
+let cv = null, core = null;
+let cvPromise = null;
+function loadCV() {
+  if (cvPromise) return cvPromise;
+  cvPromise = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = CV_URL; s.async = true;
+    s.onerror = () => rej(new Error("OpenCV konnte nicht geladen werden."));
+    s.onload = async () => {
+      try {
+        let c = window.cv;
+        if (c instanceof Promise) c = await c;
+        else if (!c.Mat) c = await new Promise(r => { c.onRuntimeInitialized = () => r(c); });
+        cv = c; core = makeCore(cv); res(cv);
+      } catch (e) { rej(e); }
+    };
+    document.head.appendChild(s);
+  });
+  return cvPromise;
+}
+
+async function keepAwake() {
+  try { if ("wakeLock" in navigator) await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+
+function show(id) {
+  document.querySelectorAll(".screen").forEach(e => e.classList.remove("show"));
+  $(id).classList.add("show");
+}
+
+/* ===================================================== Kamera (Handy) */
+const Cam = {
+  peer: null, conn: null, call: null, stream: null, track: null, ic: null, code: null, timer: null,
+
+  async start() {
+    const code = $("#camCode").value.trim();
+    if (!/^\d{6}$/.test(code)) { this.status("Bitte den 6-stelligen Code von der Anzeige eingeben.", "warn"); return; }
+    LS.set("code", code); this.code = code;
+    $("#btnCamStart").disabled = true;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15, max: 30 } }
+      });
+    } catch (e) {
+      this.status("Kein Kamerazugriff: " + e.message, "warn"); $("#btnCamStart").disabled = false; return;
+    }
+    this.track = this.stream.getVideoTracks()[0];
+    try { this.track.contentHint = "detail"; } catch (e) {}
+    $("#camPreview").srcObject = this.stream;
+    this.ic = ("ImageCapture" in window) ? new ImageCapture(this.track) : null;
+    this.setupZoom();
+    keepAwake();
+    this.peer = new Peer();
+    this.peer.on("open", () => this.dial());
+    this.peer.on("error", e => {
+      if (e.type === "peer-unavailable") this.status("Anzeige nicht erreichbar. Ist sie auf dem Tablet geöffnet? Neuer Versuch …", "warn");
+      else this.status("Verbindungsfehler: " + e.type, "warn");
+      this.retry();
+    });
+    this.peer.on("disconnected", () => { try { this.peer.reconnect(); } catch (e) {} });
+  },
+
+  setupZoom() {
+    const caps = this.track.getCapabilities ? this.track.getCapabilities() : {};
+    if (!caps.zoom) return;
+    const z = $("#camZoom");
+    z.min = caps.zoom.min; z.max = caps.zoom.max; z.step = caps.zoom.step || 0.1;
+    z.value = this.track.getSettings().zoom || caps.zoom.min;
+    $("#camZoomVal").textContent = (+z.value).toFixed(1) + "x";
+    $("#camZoomRow").style.display = "";
+    z.oninput = () => this.setZoom(+z.value);
+  },
+
+  async setZoom(v) {
+    try {
+      await this.track.applyConstraints({ advanced: [{ zoom: v }] });
+      $("#camZoom").value = v;
+      $("#camZoomVal").textContent = v.toFixed(1) + "x";
+      LS.set("zoom", v);
+    } catch (e) {}
+  },
+
+  dial() {
+    if (!this.peer || this.peer.destroyed) return;
+    const gen = this.gen = (this.gen || 0) + 1;   // alte Verbindungen ignorieren
+    const target = PREFIX + this.code;
+    this.status("Verbinde mit Anzeige " + this.code + " …");
+    try { this.conn && this.conn.close(); } catch (e) {}
+    try { this.call && this.call.close(); } catch (e) {}
+    this.conn = this.peer.connect(target, { reliable: true });
+    this.conn.on("open", () => {
+      if (gen !== this.gen) return;
+      this.status("Verbunden. Das Handy kann jetzt in die Halterung.", "ok");
+      const caps = this.track.getCapabilities ? this.track.getCapabilities() : {};
+      const st = this.track.getSettings();
+      this.conn.send({ type: "caps", zoom: caps.zoom || null, zoomNow: st.zoom || null, photo: !!this.ic, w: st.width, h: st.height });
+      const z = LS.get("zoom", null);
+      if (z && caps.zoom) this.setZoom(z);
+    });
+    this.conn.on("data", d => this.onCmd(d));
+    this.conn.on("close", () => { if (gen !== this.gen) return; this.status("Verbindung getrennt. Neuer Versuch …", "warn"); this.retry(); });
+    this.call = this.peer.call(target, this.stream);
+    setTimeout(() => this.tuneSender(), 2000);
+  },
+
+  tuneSender() {
+    const pc = this.call && this.call.peerConnection;
+    if (!pc) return;
+    for (const s of pc.getSenders()) {
+      if (!s.track || s.track.kind !== "video") continue;
+      const p = s.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = 8000000;
+      p.degradationPreference = "maintain-resolution";
+      s.setParameters(p).catch(() => {});
+    }
+  },
+
+  retry() {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.dial(), 3000);
+  },
+
+  async onCmd(d) {
+    if (!d || !d.type) return;
+    if (d.type === "zoom") this.setZoom(d.value);
+    if (d.type === "photo") {
+      if (!this.ic) { this.conn.send({ type: "photoError", msg: "Dieses Handy kann keine Fotos über den Browser aufnehmen." }); return; }
+      try {
+        const blob = await this.ic.takePhoto();
+        const buf = await blob.arrayBuffer();
+        this.conn.send({ type: "photo", data: buf, mime: blob.type });
+      } catch (e) {
+        this.conn.send({ type: "photoError", msg: String(e.message || e) });
+      }
+    }
+  },
+
+  status(t, cls) { const el = $("#camStatus"); el.textContent = t; el.className = "status " + (cls || ""); }
+};
+
+/* ===================================================== Anzeige (Tablet) */
+const View = {
+  peer: null, conn: null, video: null, code: null,
+  orig: null,          // Canvas mit der Vorlage in voller Aufloesung
+  cal: null,           // Kalibrierung
+  vs: null,            // Ansichts-Setup (T, Groesse, Vorlage-Ausschnitt)
+  mode: 0, thr: 20, alpha: 0.5,
+  frozen: false, busy: false, lastMarkers: {}, smooth: makeSmoother(),
+  grab: document.createElement("canvas"),
+  caps: null, zoom: null, photoWait: null, frozenSrc: null,
+
+  async start() {
+    keepAwake();
+    this.code = LS.get("code", null);
+    if (!/^\d{6}$/.test(this.code || "")) { this.code = String(Math.floor(100000 + Math.random() * 900000)); LS.set("code", this.code); }
+    $("#viewCode").textContent = this.code;
+    this.thr = LS.get("thr", 20); this.mode = LS.get("mode", 0); this.alpha = LS.get("alpha", 0.5);
+    this.msg("OpenCV wird geladen …<br><span class='status'>(einmalig ca. 13 MB, danach im Cache)</span>");
+    try { await loadCV(); } catch (e) { this.msg("OpenCV konnte nicht geladen werden. Internetverbindung prüfen und Seite neu laden."); return; }
+    const blob = await idbGet("vorlage");
+    if (blob) await this.setOrig(blob, false);
+    this.cal = LS.get("cal", null);
+    if (this.cal && this.orig) this.setupView();
+    this.updateButtons();
+    this.connect();
+    this.video = document.createElement("video");
+    this.video.muted = true; this.video.playsInline = true; this.video.autoplay = true;
+    this.loop();
+  },
+
+  connect() {
+    this.status("Warte auf Kamera …");
+    this.peer = new Peer(PREFIX + this.code);
+    this.peer.on("call", call => {
+      call.answer();
+      call.on("stream", s => {
+        this.video.srcObject = s;
+        this.video.play().catch(() => {});
+        this.status("Kamera verbunden", "ok");
+      });
+      call.on("close", () => this.status("Kamera getrennt", "warn"));
+    });
+    this.peer.on("connection", c => {
+      this.conn = c;
+      c.on("data", d => this.onData(d));
+      c.on("close", () => { this.caps = null; this.updateButtons(); });
+    });
+    this.peer.on("error", e => {
+      if (e.type === "unavailable-id") this.status("Code ist belegt. Ist die Anzeige noch in einem anderen Tab offen?", "warn");
+      else if (e.type === "network" || e.type === "server-error") { this.status("Verbindungsserver nicht erreichbar, neuer Versuch …", "warn"); setTimeout(() => { try { this.peer.destroy(); } catch (x) {} this.connect(); }, 4000); }
+      else this.status("Fehler: " + e.type, "warn");
+    });
+    this.peer.on("disconnected", () => { try { this.peer.reconnect(); } catch (e) {} });
+  },
+
+  onData(d) {
+    if (!d || !d.type) return;
+    if (d.type === "caps") {
+      this.caps = d;
+      this.zoom = d.zoomNow || (d.zoom ? d.zoom.min : null);
+      this.updateButtons();
+    }
+    if (d.type === "photo" && this.photoWait) {
+      const blob = new Blob([d.data], { type: d.mime || "image/jpeg" });
+      this.photoWait.res(blob); this.photoWait = null;
+    }
+    if (d.type === "photoError" && this.photoWait) { this.photoWait.rej(new Error(d.msg)); this.photoWait = null; }
+  },
+
+  requestPhoto() {
+    return new Promise((res, rej) => {
+      if (!this.conn || !this.conn.open) { rej(new Error("Kamera nicht verbunden.")); return; }
+      this.photoWait = { res, rej };
+      this.conn.send({ type: "photo" });
+      setTimeout(() => { if (this.photoWait) { this.photoWait = null; rej(new Error("Zeitüberschreitung beim Foto.")); } }, 30000);
+    });
+  },
+
+  async blobToCanvas(blob) {
+    const bmp = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    bmp.close && bmp.close();
+    return c;
+  },
+
+  async setOrig(blob, isNew) {
+    this.orig = await this.blobToCanvas(blob);
+    if (isNew) {
+      await idbSet("vorlage", blob);
+      this.cal = null; LS.del("cal"); this.vs = null;
+      this.toast("Vorlage geladen. Jetzt kalibrieren.");
+    }
+  },
+
+  setupView() {
+    const [x0, y0, x1, y1] = this.cal.roi;
+    const w = x1 - x0, h = y1 - y0;
+    const sc = VIEW_MAX / Math.max(w, h);
+    const vw = Math.round(w * sc), vh = Math.round(h * sc);
+    const crop = document.createElement("canvas");
+    crop.width = vw; crop.height = vh;
+    const cx = crop.getContext("2d");
+    cx.imageSmoothingQuality = "high";
+    cx.drawImage(this.orig, x0, y0, w, h, 0, 0, vw, vh);
+    const T = [sc, 0, -x0 * sc, 0, sc, -y0 * sc, 0, 0, 1];
+    // mm pro Ansichtspixel in der Bildmitte
+    const c = [(x0 + x1) / 2, (y0 + y1) / 2];
+    const a = M3.apply(this.cal.H, c), b = M3.apply(this.cal.H, [c[0] + 1, c[1]]);
+    const refPxPerOrigPx = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const mmPerView = refPxPerOrigPx / this.cal.pxPerMm / sc;
+    this.vs = { T, vw, vh, crop, mmPerView };
+    for (const id of ["#cView", "#cOver", "#cHud"]) { $(id).width = vw; $(id).height = vh; }
+    this.drawOverlay(); this.drawHud();
+  },
+
+  drawOverlay() {
+    const o = $("#cOver"), ctx = o.getContext("2d");
+    ctx.clearRect(0, 0, o.width, o.height);
+    if (!this.vs) return;
+    const { vw, vh, crop } = this.vs;
+    if (this.mode === 0) {
+      const src = cv.imread(crop);
+      const mask = core.edges(src, this.thr);
+      src.delete();
+      const img = ctx.createImageData(vw, vh);
+      for (let i = 0; i < mask.length; i++) if (mask[i]) { const j = i * 4; img.data[j] = 255; img.data[j + 1] = 0; img.data[j + 2] = 255; img.data[j + 3] = 255; }
+      ctx.putImageData(img, 0, 0);
+      o.style.opacity = 1;
+      $("#lblAdj").textContent = "Linien " + this.thr;
+    } else if (this.mode === 1) {
+      ctx.drawImage(crop, 0, 0);
+      o.style.opacity = this.alpha;
+      $("#lblAdj").textContent = "Deckkraft " + Math.round(this.alpha * 100) + " %";
+    } else {
+      $("#lblAdj").textContent = "";
+    }
+    $("#bMode").textContent = ["Konturen", "Überblendung", "Nur Bild"][this.mode];
+  },
+
+  drawHud() {
+    const h = $("#cHud"), ctx = h.getContext("2d");
+    ctx.clearRect(0, 0, h.width, h.height);
+    if (!this.vs) return;
+    const bar = 5 / this.vs.mmPerView;
+    ctx.fillStyle = "rgba(255,255,255,.85)"; ctx.fillRect(8, h.height - 40, bar + 62, 30);
+    ctx.fillStyle = "#000"; ctx.fillRect(16, h.height - 29, bar, 8);
+    ctx.font = "16px system-ui"; ctx.fillText("5 mm", 24 + bar, h.height - 19);
+  },
+
+  // Hauptschleife: so oft wie die Verarbeitung es zulaesst
+  loop() {
+    const tick = () => {
+      const v = this.video;
+      const fresh = v && v.readyState >= 2 && v.videoWidth && v.currentTime !== this.lastT;
+      if (!this.frozen && !this.busy && fresh) {
+        this.busy = true; this.lastT = v.currentTime;
+        try { this.process(this.video, this.video.videoWidth, this.video.videoHeight, true); }
+        catch (e) { console.error(e); }
+        this.busy = false;
+      } else if (!this.video || !this.video.videoWidth) {
+        if (!this.frozen) this.idleMsg();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  },
+
+  idleMsg() {
+    if (!cv) return;
+    if (!this.orig) this.msg("Kamera starten und <b>Vorlage</b> laden.<br><span class='status'>Auf dem Handy diese Seite öffnen, „Kamera“ wählen und Code " + this.code + " eingeben.</span>");
+    else this.msg("Warte auf die Kamera …<br><span class='status'>Auf dem Handy „Kamera“ wählen und Code " + this.code + " eingeben.</span>");
+  },
+
+  process(source, sw, sh, live) {
+    const g = this.grab;
+    if (g.width !== sw || g.height !== sh) { g.width = sw; g.height = sh; }
+    const gctx = g.getContext("2d", { willReadFrequently: true });
+    gctx.drawImage(source, 0, 0, sw, sh);
+    const src = cv.imread(g);
+    let mk = core.detect(src);
+    if (live) mk = this.smooth(mk);
+    this.lastMarkers = mk;
+    const n = Object.keys(mk).length;
+    if (!this.cal || !this.vs) {
+      this.drawRaw(g, mk);
+      src.delete();
+      this.msg(this.orig ? "Marker " + n + "/4 erkannt.<br>Jetzt <b>Kalibrieren</b>." : "Marker " + n + "/4 erkannt.<br>Jetzt <b>Vorlage</b> laden.", true);
+      return;
+    }
+    const { H, n: nc } = core.homographyBetween(this.cal.ref, mk);
+    if (!H) {
+      src.delete();
+      this.msg("Zu wenige Marker sichtbar (" + nc + "/4).<br><span class='status'>Hand aus dem Bild nehmen oder Licht prüfen.</span>", true);
+      return;
+    }
+    const Hof = M3.mul(H, this.cal.H);
+    const inv = M3.inv(Hof);
+    if (!inv) { src.delete(); return; }
+    const M = M3.mul(this.vs.T, inv);
+    const dst = core.warp(src, M, this.vs.vw, this.vs.vh);
+    cv.imshow($("#cView"), dst);
+    dst.delete(); src.delete();
+    this.msg(null);
+    this.status((this.frozen ? "Standbild · " : "Live · ") + "Marker " + nc + "/4", nc < 4 ? "warn" : "ok");
+  },
+
+  drawRaw(g, mk) {
+    const v = $("#cView");
+    const s = Math.min(1, 1600 / Math.max(g.width, g.height));
+    const w = Math.round(g.width * s), h = Math.round(g.height * s);
+    for (const id of ["#cView", "#cOver", "#cHud"]) { if ($(id).width !== w || $(id).height !== h) { $(id).width = w; $(id).height = h; } }
+    $("#cOver").getContext("2d").clearRect(0, 0, w, h);
+    $("#cHud").getContext("2d").clearRect(0, 0, w, h);
+    const ctx = v.getContext("2d");
+    ctx.drawImage(g, 0, 0, w, h);
+    ctx.lineWidth = 4; ctx.strokeStyle = "#0f0"; ctx.font = "bold 28px system-ui"; ctx.fillStyle = "#0f0";
+    for (const id in mk) {
+      const c = mk[id].map(p => [p[0] * s, p[1] * s]);
+      ctx.beginPath(); ctx.moveTo(c[0][0], c[0][1]); for (let k = 1; k < 4; k++) ctx.lineTo(c[k][0], c[k][1]); ctx.closePath(); ctx.stroke();
+      ctx.fillText(id, c[0][0], c[0][1] - 8);
+    }
+  },
+
+  async snapshotCanvas() {
+    const c = document.createElement("canvas");
+    c.width = this.video.videoWidth; c.height = this.video.videoHeight;
+    c.getContext("2d").drawImage(this.video, 0, 0);
+    return c;
+  },
+
+  async getReference() {
+    if (this.caps && this.caps.photo) {
+      this.toast("Foto in voller Auflösung wird geholt …", 30000);
+      try { const blob = await this.requestPhoto(); this.toast(null); return await this.blobToCanvas(blob); }
+      catch (e) { this.toast("Foto nicht möglich (" + e.message + "). Nehme das Livebild.", 4000); }
+    }
+    if (!this.video || !this.video.videoWidth) throw new Error("Keine Kamera verbunden.");
+    return await this.snapshotCanvas();
+  },
+
+  async calibrate() {
+    if (!this.orig) { this.toast("Zuerst die Vorlage laden.", 3000); return; }
+    let ref;
+    try { ref = await this.getReference(); } catch (e) { this.toast(e.message, 4000); return; }
+    const src = cv.imread(ref); const mk = core.detect(src); src.delete();
+    const n = Object.keys(mk).length;
+    if (n < 3) { this.toast("Nur " + n + " Marker im Foto erkannt. Mindestens 3 nötig.", 5000); return; }
+    const pRef = await Picker.pick(ref, { title: "Foto: unbemalte Passpunkte antippen (mind. 4, gut verteilt)", min: 4 });
+    if (!pRef) return;
+    const pOrg = await Picker.pick(this.orig, { title: "Vorlage: dieselben " + pRef.length + " Punkte in derselben Reihenfolge", count: pRef.length, min: pRef.length, ghosts: null });
+    if (!pOrg) return;
+    const H = core.homography(pOrg, pRef, false);
+    if (!H) { this.toast("Kalibrierung fehlgeschlagen. Punkte prüfen.", 4000); return; }
+    const ppm = core.pxPerMm(mk);
+    const err = pOrg.map((p, i) => { const q = M3.apply(H, p); return Math.hypot(q[0] - pRef[i][0], q[1] - pRef[i][1]) / ppm; });
+    const roiPts = await Picker.pick(this.orig, { title: "Vorlage: Ausschnitt festlegen – oben links, dann unten rechts antippen. „Fertig“ = ganzes Bild", count: 2, min: 0 });
+    let roi = [0, 0, this.orig.width, this.orig.height];
+    if (roiPts && roiPts.length === 2) {
+      const xs = roiPts.map(p => p[0]), ys = roiPts.map(p => p[1]);
+      roi = [Math.max(0, Math.round(Math.min(...xs))), Math.max(0, Math.round(Math.min(...ys))),
+             Math.min(this.orig.width, Math.round(Math.max(...xs))), Math.min(this.orig.height, Math.round(Math.max(...ys)))];
+      if (roi[2] - roi[0] < 20 || roi[3] - roi[1] < 20) roi = [0, 0, this.orig.width, this.orig.height];
+    }
+    this.cal = { ref: mk, H, pxPerMm: ppm, roi, err };
+    LS.set("cal", this.cal);
+    this.smooth.reset();
+    this.setupView();
+    const worst = Math.max(...err);
+    this.toast("Kalibriert. Restfehler je Punkt (mm): " + err.map(e => e.toFixed(2)).join(" · ") +
+      (worst > 1 && err.length > 4 ? "<br>Ein Punkt liegt über 1 mm daneben. Neu kalibrieren lohnt sich." : ""), 9000);
+    // Referenzbild einmal entzerrt zeigen
+    this.process(ref, ref.width, ref.height, false);
+  },
+
+  async photoCheck() {
+    if (!this.cal) { this.toast("Zuerst kalibrieren.", 3000); return; }
+    try {
+      this.toast("Foto wird geholt …", 30000);
+      const blob = await this.requestPhoto();
+      const c = await this.blobToCanvas(blob);
+      this.toast(null);
+      this.frozen = true; this.updateButtons();
+      this.process(c, c.width, c.height, false);
+      this.toast("Foto " + c.width + " × " + c.height + ". Zurück zum Livebild mit „Weiter“.", 4000);
+    } catch (e) { this.toast(e.message, 4000); }
+  },
+
+  sendZoom(dir) {
+    if (!this.caps || !this.caps.zoom || !this.conn) return;
+    const z = this.caps.zoom, step = Math.max(z.step || 0.1, 0.1);
+    this.zoom = Math.min(z.max, Math.max(z.min, Math.round(((this.zoom || z.min) + dir * step) * 10) / 10));
+    this.conn.send({ type: "zoom", value: this.zoom });
+    $("#lblZoom").textContent = this.zoom.toFixed(1) + "x";
+  },
+
+  updateButtons() {
+    $("#bFreeze").textContent = this.frozen ? "Weiter" : "Einfrieren";
+    $("#bFreeze").classList.toggle("on", this.frozen);
+    $("#bFoto").disabled = !(this.caps && this.caps.photo);
+    $("#zoomGrp").style.display = (this.caps && this.caps.zoom) ? "" : "none";
+    if (this.zoom) $("#lblZoom").textContent = this.zoom.toFixed(1) + "x";
+  },
+
+  adjust(dir) {
+    if (this.mode === 0) { this.thr = Math.min(200, Math.max(4, this.thr - dir * 4)); LS.set("thr", this.thr); }
+    else if (this.mode === 1) { this.alpha = Math.min(0.9, Math.max(0.1, Math.round((this.alpha + dir * 0.1) * 10) / 10)); LS.set("alpha", this.alpha); }
+    this.drawOverlay();
+  },
+
+  msg(html, soft) {
+    const m = $("#msg");
+    if (!html) { m.style.display = "none"; return; }
+    m.innerHTML = html; m.style.display = "block";
+    m.style.background = soft ? "rgba(20,20,20,.6)" : "rgba(20,20,20,.85)";
+  },
+  toastTimer: null,
+  toast(html, ms) {
+    const t = $("#toast");
+    clearTimeout(this.toastTimer);
+    if (!html) { t.style.display = "none"; return; }
+    t.innerHTML = html; t.style.display = "block";
+    this.toastTimer = setTimeout(() => t.style.display = "none", ms || 3000);
+  },
+  status(t, cls) { const el = $("#viewStatus"); el.textContent = t; el.className = "status " + (cls || ""); }
+};
+
+/* ===================================================== Punktwahl mit Lupe */
+const Picker = {
+  pick(img, { title, count = null, min = 1 }) {
+    return new Promise(resolve => {
+      const P = $("#picker"), can = $("#pcan"), lp = $("#loupe"), hint = $("#loupeHint");
+      const pts = [];
+      let fit = null, pending = null;
+      const LZ = 5, HALF = 30; // Lupe: 5-fach, 60x60 Bildpixel
+      P.classList.add("show");
+      const update = () => {
+        const n = pts.length;
+        $("#ptitle").textContent = title + "  ·  " + n + (count ? "/" + count : "") + " Punkte";
+        $("#pDone").disabled = n < min;
+      };
+      const draw = () => {
+        const r = can.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+        can.width = Math.round(r.width * dpr); can.height = Math.round(r.height * dpr);
+        const s = Math.min(can.width / img.width, can.height / img.height);
+        const ox = (can.width - img.width * s) / 2, oy = (can.height - img.height * s) / 2;
+        fit = { s, ox, oy, dpr };
+        const ctx = can.getContext("2d");
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, can.width, can.height);
+        ctx.drawImage(img, ox, oy, img.width * s, img.height * s);
+        ctx.font = (16 * dpr) + "px system-ui";
+        pts.forEach((p, i) => {
+          const x = ox + p[0] * s, y = oy + p[1] * s;
+          ctx.fillStyle = "#ff1744"; ctx.beginPath(); ctx.arc(x, y, 5 * dpr, 0, 7); ctx.fill();
+          ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 3 * dpr;
+          ctx.strokeText(String(i + 1), x + 8 * dpr, y - 8 * dpr); ctx.fillText(String(i + 1), x + 8 * dpr, y - 8 * dpr);
+        });
+        update();
+      };
+      const openLoupe = (ix, iy, cssX, cssY) => {
+        const x0 = Math.round(Math.min(Math.max(ix - HALF, 0), Math.max(0, img.width - 2 * HALF)));
+        const y0 = Math.round(Math.min(Math.max(iy - HALF, 0), Math.max(0, img.height - 2 * HALF)));
+        pending = { x0, y0 };
+        const ctx = lp.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 300, 300);
+        ctx.drawImage(img, x0, y0, 2 * HALF, 2 * HALF, 0, 0, 300, 300);
+        ctx.strokeStyle = "rgba(0,255,0,.8)"; ctx.lineWidth = 1;
+        const cx = (ix - x0) * LZ, cy = (iy - y0) * LZ;
+        ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, 300); ctx.moveTo(0, cy); ctx.lineTo(300, cy); ctx.stroke();
+        const wrap = $("#pwrap").getBoundingClientRect();
+        const left = cssX < wrap.width / 2 ? wrap.width - 316 : 16;
+        const top = cssY < wrap.height / 2 ? wrap.height - 316 : 16;
+        lp.style.left = Math.max(0, left) + "px"; lp.style.top = Math.max(0, top) + "px"; lp.style.display = "block";
+        hint.style.left = lp.style.left; hint.style.top = (Math.max(0, top) - 24 < 0 ? Math.max(0, top) + 304 : Math.max(0, top) - 24) + "px"; hint.style.display = "block";
+      };
+      const closeLoupe = () => { lp.style.display = "none"; hint.style.display = "none"; pending = null; };
+      const finish = (res) => {
+        P.classList.remove("show"); closeLoupe();
+        can.onpointerdown = lp.onpointerdown = null;
+        $("#pUndo").onclick = $("#pDone").onclick = $("#pCancel").onclick = null;
+        window.removeEventListener("resize", draw);
+        resolve(res);
+      };
+      can.onpointerdown = e => {
+        const r = can.getBoundingClientRect();
+        const px = (e.clientX - r.left) * fit.dpr, py = (e.clientY - r.top) * fit.dpr;
+        const ix = (px - fit.ox) / fit.s, iy = (py - fit.oy) / fit.s;
+        if (ix < 0 || iy < 0 || ix > img.width || iy > img.height) return;
+        openLoupe(ix, iy, e.clientX - r.left, e.clientY - r.top);
+      };
+      lp.onpointerdown = e => {
+        if (!pending) return;
+        const r = lp.getBoundingClientRect();
+        const x = (e.clientX - r.left) * (300 / r.width), y = (e.clientY - r.top) * (300 / r.height);
+        pts.push([pending.x0 + x / LZ, pending.y0 + y / LZ]);
+        closeLoupe(); draw();
+        if (count && pts.length >= count) setTimeout(() => finish(pts), 250);
+      };
+      $("#pUndo").onclick = () => { pts.pop(); closeLoupe(); draw(); };
+      $("#pDone").onclick = () => { if (pts.length >= min) finish(pts); };
+      $("#pCancel").onclick = () => finish(null);
+      window.addEventListener("resize", draw);
+      requestAnimationFrame(draw);
+    });
+  }
+};
+
+/* ===================================================== Verdrahtung */
+$("#btnRoleCam").onclick = () => { LS.set("role", "cam"); location.hash = "kamera"; route(); };
+$("#btnRoleView").onclick = () => { LS.set("role", "view"); location.hash = "anzeige"; route(); };
+$("#btnCamBack").onclick = () => { LS.del("role"); location.hash = ""; location.reload(); };
+$("#btnCamStart").onclick = () => Cam.start();
+$("#bVorlage").onclick = () => $("#fileVorlage").click();
+$("#fileVorlage").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try { await View.setOrig(f, true); View.updateButtons(); } catch (err) { View.toast("Bild konnte nicht gelesen werden.", 4000); }
+  e.target.value = "";
+};
+$("#bKal").onclick = () => View.calibrate();
+$("#bMode").onclick = () => { View.mode = (View.mode + 1) % 3; LS.set("mode", View.mode); View.drawOverlay(); };
+$("#bMinus").onclick = () => View.adjust(-1);
+$("#bPlus").onclick = () => View.adjust(1);
+$("#bFreeze").onclick = () => { View.frozen = !View.frozen; View.smooth.reset(); View.updateButtons(); };
+$("#bFoto").onclick = () => View.photoCheck();
+$("#bZm").onclick = () => View.sendZoom(-1);
+$("#bZp").onclick = () => View.sendZoom(1);
+
+let started = false;
+function route() {
+  const h = location.hash.replace("#", "") || (LS.get("role", null) === "cam" ? "kamera" : LS.get("role", null) === "view" ? "anzeige" : "");
+  if (h === "kamera") {
+    show("#kamera");
+    $("#camCode").value = LS.get("code", "") || "";
+  } else if (h === "anzeige") {
+    show("#anzeige");
+    if (!started) { started = true; View.start(); }
+  } else show("#start");
+}
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>
