@@ -306,7 +306,12 @@ const Cam = {
         video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15, max: 30 } }
       });
     } catch (e) {
-      this.status("Kein Kamerazugriff: " + e.message, "warn"); $("#btnCamStart").disabled = false; return;
+      const hint = (e.name === "NotAllowedError")
+        ? "Kamerazugriff verweigert. Links neben der Adresse auf das Symbol tippen und bei „Kamera“ „Zulassen“ wählen. Hilft das nicht: in den Android-Einstellungen unter Apps → (dein Browser) → Berechtigungen die Kamera erlauben. Am zuverlässigsten läuft die Seite in Chrome."
+        : (e.name === "NotReadableError")
+        ? "Die Kamera wird gerade von einer anderen App benutzt. Diese App schließen und erneut starten."
+        : "Kein Kamerazugriff: " + e.message;
+      this.status(hint, "warn"); $("#btnCamStart").disabled = false; return;
     }
     this.track = this.stream.getVideoTracks()[0];
     try { this.track.contentHint = "detail"; } catch (e) {}
